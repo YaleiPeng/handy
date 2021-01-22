@@ -1,0 +1,11 @@
+import os
+from tkinter import messagebox
+
+
+script_dir = os.path.dirname(__file__)
+data_dir = os.path.join(os.path.dirname(script_dir), "data")
+export_dict_dir = os.path.join(data_dir, "export_dict.json")
+
+if os.path.exists(export_dict_dir):
+    os.remove(export_dict_dir)
+messagebox.showinfo(title="Youtube Downloader", message='Initialization Done!')

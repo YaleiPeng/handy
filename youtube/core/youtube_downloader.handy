@@ -1,0 +1,201 @@
+from __future__ import unicode_literals
+import time 
+import os
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import pygubu
+import json
+import subprocess
+
+app_title = "Youtube Downloader"
+
+script_dir = os.path.dirname(__file__)
+data_dir = os.path.join(os.path.dirname(script_dir), "data")
+export_dict_dir = os.path.join(data_dir, "export_dict.json")
+
+def load_export_dict():
+    if os.path.exists(export_dict_dir):
+        with open(export_dict_dir, 'r') as f:
+            export_dict = json.load(f)
+        f.close()
+        print("Export Dict Loaded.")
+    else: # export_dict.json does not exist, then create one
+        export_dict = {"export_dir":[], "playlists":[], 'default':{'export_dir': None}}
+        with open(export_dict_dir, 'w') as f:
+            json.dump(export_dict, f)
+        f.close()
+        print("Export Dict Created.")
+
+    return export_dict
+
+class gui:
+    """
+    To improve:
+        if video has the same name, it will overwrite.
+    """
+    def __init__(self, parent):
+        self.app_title = app_title
+        self.parent = parent
+        #1: Create a builder
+        self.builder = builder = pygubu.Builder()
+
+        #2: Load an ui file
+        builder.add_from_file(os.path.join(script_dir, 'gui.ui'))
+
+        #3: Create the mainwindow
+        self.mainwindow = builder.get_object('main_window', self.parent)
+        
+        builder.connect_callbacks(self)
+
+        # set default values
+        export_dict = load_export_dict()
+        def_export_dir = export_dict['default']['export_dir']
+        if def_export_dir is not None:
+            self.builder.get_variable("export_dir").set(def_export_dir)
+            self.init_dir = def_export_dir
+        else:
+            self.init_dir = os.path.dirname(__file__)
+
+        self.builder.get_variable("url").trace('w', lambda name, index, mode: self.cb_show_url_type())
+        
+    def run_app(self):
+        self.mainwindow.mainloop()
+
+    def cb_browse_export_dir(self):
+
+        fpath = filedialog.askdirectory(
+            initialdir=self.init_dir,
+            title="Export Directory"
+        )
+
+        if fpath != "":
+            self.builder.get_variable('export_dir').set(fpath)
+
+    def cb_open(self):
+        path = self.builder.get_variable('export_dir').get()
+        path = path.replace('/', '\\')
+        print(path)
+        try:
+            subprocess.Popen(f'explorer "{path}"')
+        except:
+            messagebox.showwarning(f"Failed to open the directory: {path}")
+
+    def cb_show_url_type(self):
+        url = self.builder.get_variable("url").get()
+        if "/playlist?list=" in url:
+            url_type = "Youtube Playlist"
+        elif "/watch?v=" in url:
+            url_type = "Youtube Video"
+        else:
+            url_type = "Invalid URL"
+        self.builder.get_variable('url_type').set(url_type)
+
+
+    def cb_exit(self):
+        self.mainwindow.quit()
+
+    def cb_download(self):
+        """
+        if video has the same name, it will overwrite.
+        """
+        # init progress bar
+        self.builder.get_variable("download_progress").set(f"0/0")
+        self.builder.get_object('progressbar_download')['value'] = 0
+
+        url_type = self.builder.get_variable('url_type').get()
+
+        if url_type == "Invalid URL":
+            messagebox.showwarning(title=self.app_title, message=url_type)
+            return
+
+        export_dict = load_export_dict()
+        import youtube_dl
+        from selenium import webdriver
+        executable_path = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
+        url = self.builder.get_variable("url").get()
+        export_folder = self.builder.get_variable("export_dir").get()
+
+        # print(url)
+        # print(executable_path)
+        
+        # detect if url is a youtube video url or a playlist url
+        
+        if url_type == "Youtube Playlist":
+            self.builder.get_variable("url_type").set("YouTube Playlist")
+            driver = webdriver.Chrome(executable_path)
+            driver.get(url)
+            time.sleep(5)
+            playlist=[]
+            videos=driver.find_elements_by_class_name('style-scope ytd-playlist-video-renderer')
+            driver.close()
+            # parse html and get video url links
+            for video in videos:
+                link=video.find_element_by_xpath('.//*[@id="content"]/a').get_attribute("href")
+                end=link.find("&")
+                link=link[:end]
+                playlist.append(link)
+        elif url_type == "Youtube Video":
+            self.builder.get_variable("url_type").set("YouTube Video")
+            playlist = [url]
+        else:
+            raise
+
+
+        ydl_opts = {
+            'outtmpl': f'{export_folder}/%(title)s.%(ext)s',
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+
+        ttl_n = len(playlist) # num of vids in youtube playlist
+        new_export_dict = export_dict
+
+        # check if already updated
+        if export_folder in export_dict['export_dir']:
+            ind = export_dict['export_dir'].index(export_folder)
+            # update playlist by only keeping the non-existed urls 
+            playlist = [url for url in playlist if url not in export_dict['playlists'][ind]]
+        else:
+            new_export_dict['export_dir'].append(export_folder)
+            new_export_dict['playlists'].append(playlist)
+
+        
+        self.builder.get_variable("download_progress").set(f"0/{len(playlist)}")
+
+        for i, link in enumerate(playlist, 1):
+            self.mainwindow.update()
+            self.builder.get_variable("download_progress").set(f"{i}/{len(playlist)}")
+            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([link])
+            self.builder.get_object('progressbar_download')['value'] = i/len(playlist)*100
+            self.mainwindow.update_idletasks()
+            # time.sleep(1.5)
+
+        # # ask to update default setting if None 
+        if new_export_dict['default']['export_dir'] is None:
+            update_default = messagebox.askyesno(
+                title=self.app_title,
+                message="Do you want to set this directory as your default export directory?"
+                )
+            if update_default:
+                new_export_dict['default']['export_dir'] = export_folder
+                print(f"Default export directory has been updated.")
+
+        with open(export_dict_dir,'w') as f:
+            json.dump(new_export_dict,f)
+        f.close()
+        print("Export Dict Updated.")
+        
+
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title(app_title)
+    app = gui(root)
+    app.run_app()
+
